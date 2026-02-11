@@ -20,7 +20,7 @@ router.post('/register', async (req, res) => {
     }
 
     // Check if user exists
-    const existingUser = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+    const existingUser = await db.getAsync('SELECT id FROM users WHERE email = ?', [email]);
     if (existingUser) {
       return res.status(400).json({ error: 'Cet email est déjà utilisé' });
     }
@@ -29,12 +29,13 @@ router.post('/register', async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     // Insert user
-    const result = db.prepare(
-      'INSERT INTO users (email, password) VALUES (?, ?)'
-    ).run(email, hashedPassword);
+    const result = await db.runAsync(
+      'INSERT INTO users (email, password) VALUES (?, ?)',
+      [email, hashedPassword]
+    );
 
     const token = jwt.sign(
-      { userId: result.lastInsertRowid, email },
+      { userId: result.lastID, email },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
@@ -42,7 +43,7 @@ router.post('/register', async (req, res) => {
     res.status(201).json({
       message: 'Utilisateur créé avec succès',
       token,
-      user: { id: result.lastInsertRowid, email }
+      user: { id: result.lastID, email }
     });
   } catch (error) {
     console.error('Register error:', error);
@@ -60,7 +61,7 @@ router.post('/login', async (req, res) => {
     }
 
     // Find user
-    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+    const user = await db.getAsync('SELECT * FROM users WHERE email = ?', [email]);
     if (!user) {
       return res.status(401).json({ error: 'Email ou mot de passe incorrect' });
     }
@@ -89,28 +90,40 @@ router.post('/login', async (req, res) => {
 });
 
 // Get current user
-router.get('/me', authMiddleware, (req, res) => {
-  const user = db.prepare('SELECT id, email, expo_push_token, created_at FROM users WHERE id = ?').get(req.user.userId);
+router.get('/me', authMiddleware, async (req, res) => {
+  try {
+    const user = await db.getAsync('SELECT id, email, expo_push_token, created_at FROM users WHERE id = ?', [req.user.userId]);
 
-  if (!user) {
-    return res.status(404).json({ error: 'Utilisateur non trouvé' });
+    if (!user) {
+      return res.status(404).json({ error: 'Utilisateur non trouvé' });
+    }
+
+    res.json({ user });
+  } catch (error) {
+    console.error('Get me error:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
   }
-
-  res.json({ user });
 });
 
 // Update push token
-router.post('/push-token', authMiddleware, (req, res) => {
-  const { pushToken } = req.body;
+router.post('/push-token', authMiddleware, async (req, res) => {
+  try {
+    const { pushToken } = req.body;
 
-  if (!pushToken) {
-    return res.status(400).json({ error: 'Push token requis' });
+    if (!pushToken) {
+      return res.status(400).json({ error: 'Push token requis' });
+    }
+
+    await db.runAsync(
+      'UPDATE users SET expo_push_token = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [pushToken, req.user.userId]
+    );
+
+    res.json({ message: 'Push token enregistré' });
+  } catch (error) {
+    console.error('Push token error:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
   }
-
-  db.prepare('UPDATE users SET expo_push_token = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-    .run(pushToken, req.user.userId);
-
-  res.json({ message: 'Push token enregistré' });
 });
 
 module.exports = router;

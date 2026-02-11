@@ -15,7 +15,7 @@ router.post('/send', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'userId, title et body sont requis' });
     }
 
-    const user = db.prepare('SELECT expo_push_token FROM users WHERE id = ?').get(userId);
+    const user = await db.getAsync('SELECT expo_push_token FROM users WHERE id = ?', [userId]);
 
     if (!user || !user.expo_push_token) {
       return res.status(400).json({ error: 'Utilisateur non trouvé ou push token non enregistré' });
@@ -42,20 +42,21 @@ router.post('/send', authMiddleware, async (req, res) => {
     }
 
     // Save notification
-    const result = db.prepare(
-      'INSERT INTO notifications (user_id, title, body, data, status, ticket_id, sent_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)'
-    ).run(
-      userId,
-      title,
-      body,
-      JSON.stringify(data || {}),
-      tickets[0]?.status || 'error',
-      tickets[0]?.id || null
+    const result = await db.runAsync(
+      'INSERT INTO notifications (user_id, title, body, data, status, ticket_id, sent_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)',
+      [
+        userId,
+        title,
+        body,
+        JSON.stringify(data || {}),
+        tickets[0]?.status || 'error',
+        tickets[0]?.id || null
+      ]
     );
 
     res.json({
       message: 'Notification envoyée',
-      notificationId: result.lastInsertRowid,
+      notificationId: result.lastID,
       ticket: tickets[0]
     });
   } catch (error) {
@@ -74,9 +75,10 @@ router.post('/send-bulk', authMiddleware, async (req, res) => {
     }
 
     const placeholders = userIds.map(() => '?').join(',');
-    const users = db.prepare(
-      `SELECT id, expo_push_token FROM users WHERE id IN (${placeholders}) AND expo_push_token IS NOT NULL`
-    ).all(...userIds);
+    const users = await db.allAsync(
+      `SELECT id, expo_push_token FROM users WHERE id IN (${placeholders}) AND expo_push_token IS NOT NULL`,
+      userIds
+    );
 
     const messages = users
       .filter(user => Expo.isExpoPushToken(user.expo_push_token))
@@ -101,26 +103,19 @@ router.post('/send-bulk', authMiddleware, async (req, res) => {
     }
 
     // Save notifications
-    const insertStmt = db.prepare(
-      'INSERT INTO notifications (user_id, title, body, data, status, ticket_id, sent_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)'
-    );
-
-    const insertMany = db.transaction((notifications) => {
-      for (const notif of notifications) {
-        insertStmt.run(notif.userId, notif.title, notif.body, notif.data, notif.status, notif.ticketId);
-      }
-    });
-
-    const notificationsToSave = users.map((user, index) => ({
-      userId: user.id,
-      title,
-      body,
-      data: JSON.stringify(data || {}),
-      status: tickets[index]?.status || 'error',
-      ticketId: tickets[index]?.id || null
-    }));
-
-    insertMany(notificationsToSave);
+    for (let i = 0; i < users.length; i++) {
+      await db.runAsync(
+        'INSERT INTO notifications (user_id, title, body, data, status, ticket_id, sent_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)',
+        [
+          users[i].id,
+          title,
+          body,
+          JSON.stringify(data || {}),
+          tickets[i]?.status || 'error',
+          tickets[i]?.id || null
+        ]
+      );
+    }
 
     res.json({
       message: `${tickets.length} notifications envoyées`,
@@ -141,9 +136,9 @@ router.post('/send-all', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'title et body sont requis' });
     }
 
-    const users = db.prepare(
+    const users = await db.allAsync(
       'SELECT id, expo_push_token FROM users WHERE expo_push_token IS NOT NULL'
-    ).all();
+    );
 
     const messages = users
       .filter(user => Expo.isExpoPushToken(user.expo_push_token))
@@ -178,12 +173,18 @@ router.post('/send-all', authMiddleware, async (req, res) => {
 });
 
 // Get notification history for current user
-router.get('/history', authMiddleware, (req, res) => {
-  const notifications = db.prepare(
-    'SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 50'
-  ).all(req.user.userId);
+router.get('/history', authMiddleware, async (req, res) => {
+  try {
+    const notifications = await db.allAsync(
+      'SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 50',
+      [req.user.userId]
+    );
 
-  res.json({ notifications });
+    res.json({ notifications });
+  } catch (error) {
+    console.error('Get history error:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
 module.exports = router;
