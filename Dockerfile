@@ -13,6 +13,7 @@ RUN npm ci --only=production
 
 # Copy source code
 COPY src ./src
+COPY send-notification.js ./
 
 # Create data directory for SQLite
 RUN mkdir -p /app/data
